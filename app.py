@@ -258,6 +258,7 @@ def calculate_mo_coefficients(mol: Chem.Mol) -> dict[str, Any]:
         "num_electrons": num_electrons,
         "fermi_energy": float(eht_result.fermiEnergy),
         "total_energy": float(eht_result.totalEnergy),
+        "overlap": overlap,
         "ao_specs": ao_specs,
     }
 
@@ -284,6 +285,7 @@ def analyze_smiles_cached(smiles: str, optimize_geometry: bool) -> dict[str, Any
         "num_electrons": mo["num_electrons"],
         "fermi_energy": mo["fermi_energy"],
         "total_energy": mo["total_energy"],
+        "overlap": mo["overlap"],
         "ao_atom_indices": ao_atom_indices,
         "ao_kinds": ao_kinds,
         "ao_n": ao_n,
@@ -416,47 +418,45 @@ def render_plotly(
     opacity: float,
     threshold_fraction: float,
 ) -> go.Figure:
+    """Render both wavefunction phases as one signed isosurface trace."""
     x, y, z, psi, bounds = grid
     max_abs = float(np.max(np.abs(psi)))
     cutoff = max(max_abs * float(threshold_fraction), 1e-12)
-    positive = np.maximum(psi, 0.0)
-    negative = np.maximum(-psi, 0.0)
 
     fig = go.Figure()
-    # Each phase is a separate positive-valued scalar field so Plotly can render both
-    # lobes explicitly, with red/blue colors and a shared relative amplitude threshold.
-    if float(positive.max()) > cutoff:
+    if max_abs > cutoff:
+        # A single trace with two isovalues (-cutoff and +cutoff) is more
+        # predictable than translucent Volume traces with two separate fields.
         fig.add_trace(
-            go.Volume(
-                x=x, y=y, z=z, value=positive,
-                isomin=cutoff, isomax=float(positive.max()),
-                surface_count=10,
-                colorscale=[[0.0, "#7CB5FF"], [1.0, "#0647D9"]],
+            go.Isosurface(
+                x=x,
+                y=y,
+                z=z,
+                value=psi,
+                isomin=-cutoff,
+                isomax=cutoff,
+                surface_count=2,
+                cmin=-cutoff,
+                cmax=cutoff,
+                colorscale=[
+                    [0.0, "#C1121F"],
+                    [0.499, "#C1121F"],
+                    [0.501, "#0647D9"],
+                    [1.0, "#0647D9"],
+                ],
                 opacity=float(opacity),
                 showscale=False,
                 caps={"x": {"show": False}, "y": {"show": False}, "z": {"show": False}},
-                name="Ψ > 0 (positive phase)",
+                lighting={"ambient": 0.72, "diffuse": 0.72, "specular": 0.12, "roughness": 0.82},
+                lightposition={"x": 100, "y": 200, "z": 150},
                 hoverinfo="skip",
-                showlegend=False,
-            )
-        )
-    if float(negative.max()) > cutoff:
-        fig.add_trace(
-            go.Volume(
-                x=x, y=y, z=z, value=negative,
-                isomin=cutoff, isomax=float(negative.max()),
-                surface_count=10,
-                colorscale=[[0.0, "#FFAAAA"], [1.0, "#C1121F"]],
-                opacity=float(opacity),
-                showscale=False,
-                caps={"x": {"show": False}, "y": {"show": False}, "z": {"show": False}},
-                name="Ψ < 0 (negative phase)",
-                hoverinfo="skip",
+                name="MO 위상 등가면",
                 showlegend=False,
             )
         )
 
     positions = np.asarray(analysis["positions"], dtype=np.float64)
+    # Draw the skeleton after the surface so bonds and atom markers remain prominent.
     _add_bonds(fig, positions, analysis["bonds"])
 
     symbols = list(analysis["symbols"])
@@ -473,14 +473,14 @@ def render_plotly(
             mode="markers+text",
             text=symbols,
             textposition="top center",
-            textfont={"size": 10, "color": "#111827"},
+            textfont={"size": 11, "color": "#111827"},
             hovertext=hover,
             hoverinfo="text",
             marker={
-                "size": [ATOM_SIZES.get(s, 8) for s in symbols],
+                "size": [ATOM_SIZES.get(s, 8) + (2 if s != "H" else 1) for s in symbols],
                 "color": [ATOM_COLORS.get(s, "#A1A1AA") for s in symbols],
                 "opacity": 1.0,
-                "line": {"color": "#6B7280", "width": 1},
+                "line": {"color": "#FFFFFF", "width": 2},
             },
             name="원자",
             showlegend=False,
@@ -488,8 +488,8 @@ def render_plotly(
     )
 
     fig.update_layout(
-        height=680,
-        margin={"l": 0, "r": 0, "t": 10, "b": 0},
+        height=700,
+        margin={"l": 0, "r": 0, "t": 8, "b": 0},
         paper_bgcolor="white",
         plot_bgcolor="white",
         scene={
@@ -501,7 +501,6 @@ def render_plotly(
         },
     )
     return fig
-
 
 # -----------------------------------------------------------------------------
 # Helpers and Streamlit UI
@@ -542,6 +541,128 @@ def orbital_occupancy(index: int, num_electrons: int) -> int:
     return 0
 
 
+def build_mo_energy_diagram(
+    energies: np.ndarray,
+    num_electrons: int,
+    selected_index: int,
+) -> go.Figure:
+    """Build a clickable MO energy-level diagram with one selectable marker per MO."""
+    energies = np.asarray(energies, dtype=float)
+    n_mos = len(energies)
+    occupancies = [orbital_occupancy(i, num_electrons) for i in range(n_mos)]
+    colors = [
+        "#F59E0B" if i == selected_index else ("#2563EB" if occupancies[i] else "#94A3B8")
+        for i in range(n_mos)
+    ]
+    sizes = [15 if i == selected_index else 9 for i in range(n_mos)]
+
+    # Exact/near-degenerate levels share the same y coordinate. Offset their
+    # clickable markers horizontally so one MO does not hide another.
+    x_positions = np.full(n_mos, 0.5, dtype=float)
+    sorted_indices = np.argsort(energies)
+    groups: list[list[int]] = []
+    for idx in sorted_indices:
+        if not groups or abs(float(energies[idx] - energies[groups[-1][0]])) > 1e-4:
+            groups.append([int(idx)])
+        else:
+            groups[-1].append(int(idx))
+    for group in groups:
+        if len(group) > 1:
+            offsets = np.linspace(0.42, 0.58, len(group))
+            for idx, x_pos in zip(group, offsets):
+                x_positions[idx] = float(x_pos)
+
+    fig = go.Figure()
+    for i, energy in enumerate(energies):
+        fig.add_shape(
+            type="line", x0=0.22, x1=0.78, y0=float(energy), y1=float(energy),
+            line={"color": colors[i], "width": 3 if i == selected_index else 1.6},
+            layer="below",
+        )
+
+    annotations = []
+    frontier = {
+        max(0, num_electrons // 2 - 1),
+        min(n_mos - 1, num_electrons // 2),
+        selected_index,
+    }
+    for i, energy in enumerate(energies):
+        occ = occupancies[i]
+        if occ:
+            annotations.append({
+                "x": 0.17, "y": float(energy), "xref": "x", "yref": "y",
+                "text": "↑↓" if occ == 2 else "↑", "showarrow": False,
+                "xanchor": "right", "font": {"size": 12, "color": "#334155"},
+            })
+        if i in frontier:
+            annotations.append({
+                "x": 0.83, "y": float(energy), "xref": "x", "yref": "y",
+                "text": orbital_label(i, num_electrons), "showarrow": False,
+                "xanchor": "left", "font": {"size": 10, "color": "#111827"},
+            })
+
+    fig.add_trace(
+        go.Scatter(
+            x=x_positions,
+            y=energies,
+            mode="markers",
+            customdata=[[i, i + 1, occupancies[i]] for i in range(n_mos)],
+            marker={
+                "size": sizes,
+                "color": colors,
+                "line": {"color": "white", "width": 1.2},
+                "symbol": ["circle" if occ else "circle-open" for occ in occupancies],
+            },
+            hovertemplate=(
+                "<b>MO %{customdata[1]}</b><br>"
+                "에너지: %{y:.3f} eV<br>"
+                "점유: %{customdata[2]} / 2 e⁻<br>"
+                "클릭해서 선택<extra></extra>"
+            ),
+            showlegend=False,
+            name="MO energy levels",
+        )
+    )
+
+    min_e, max_e = float(np.min(energies)), float(np.max(energies))
+    span = max(max_e - min_e, 1.0)
+    fig.update_layout(
+        height=min(760, max(410, 300 + 13 * n_mos)),
+        margin={"l": 44, "r": 150, "t": 10, "b": 34},
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        clickmode="event+select",
+        dragmode="zoom",
+        annotations=annotations,
+        xaxis={"range": [0.08, 0.98], "visible": False, "fixedrange": True},
+        yaxis={
+            "title": "에너지 (eV)",
+            "range": [min_e - 0.04 * span, max_e + 0.04 * span],
+            "gridcolor": "#E5E7EB",
+            "zeroline": True,
+            "zerolinecolor": "#CBD5E1",
+        },
+        hoverlabel={"bgcolor": "white"},
+    )
+    return fig
+
+
+def mulliken_ao_contributions(
+    coefficients: np.ndarray,
+    overlap: np.ndarray,
+) -> np.ndarray:
+    """Return signed Mulliken AO populations q_i = c_i * (S c)_i.
+
+    For an S-normalized MO, the values sum to one. Individual AO values can be
+    negative because the basis is non-orthogonal; they are not probabilities.
+    """
+    c = np.asarray(coefficients, dtype=float).reshape(-1)
+    s = np.asarray(overlap, dtype=float)
+    if s.shape != (c.size, c.size):
+        raise ValueError("AO 계수와 overlap 행렬 차원이 일치하지 않습니다.")
+    return c * (s @ c)
+
+
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon="⚛️", layout="wide")
 
@@ -561,15 +682,20 @@ def main() -> None:
 
         st.divider()
         st.header("렌더링 설정")
-        opacity = st.slider("파동함수 투명도", min_value=0.10, max_value=0.80, value=0.36, step=0.02)
-        threshold_fraction = st.slider(
-            "임계값 (% of max |Ψ|)",
-            min_value=0.01,
-            max_value=0.10,
-            value=0.035,
-            step=0.005,
-            help="오비탈별 최대 진폭에 대한 상대 임계값입니다. 값이 클수록 작은 진폭 영역이 사라집니다.",
+        opacity = st.slider(
+            "오비탈 표면 투명도", min_value=0.08, max_value=0.45, value=0.24, step=0.01,
+            help="투명한 3D 표면의 깊이 정렬 오류를 줄이기 위해 최대 투명도를 제한했습니다.",
         )
+        threshold_percent = st.slider(
+            "임계값 (최대 진폭 대비 %)",
+            min_value=0.1,
+            max_value=50.0,
+            value=3.5,
+            step=0.1,
+            format="%.1f",
+            help="0.1%~50.0% 범위입니다. 낮추면 약한 진폭의 바깥 영역까지 보이고, 높이면 중심부 위주로 표시됩니다.",
+        )
+        threshold_fraction = threshold_percent / 100.0
         resolution = st.select_slider(
             "3D 격자 해상도",
             options=[28, 32, 36, 40, 44, 48, 52],
@@ -612,20 +738,43 @@ def main() -> None:
     num_electrons = int(analysis["num_electrons"])
     n_mos = len(energies)
 
-    with st.sidebar:
-        st.divider()
-        st.header("에너지 준위")
-        default_index = max(0, min(n_mos - 1, (num_electrons // 2 - 1) if num_electrons % 2 == 0 else (num_electrons // 2)))
-        smiles_key = hashlib.md5(str(analysis["smiles"]).encode("utf-8")).hexdigest()[:8]
-        mo_index = st.selectbox(
-            "표시할 분자 오비탈",
-            options=list(range(n_mos)),
-            index=default_index,
-            format_func=lambda idx: f"{orbital_label(idx, num_electrons)}  |  {energies[idx]:.3f} eV",
-            key=f"quantumlens_mo_{smiles_key}",
-        )
+    default_index = max(0, min(n_mos - 1, (num_electrons // 2 - 1) if num_electrons % 2 == 0 else (num_electrons // 2)))
+    smiles_key = hashlib.md5(str(analysis["smiles"]).encode("utf-8")).hexdigest()[:8]
+    selected_state_key = f"quantumlens_selected_mo_{smiles_key}"
+    if selected_state_key not in st.session_state:
+        st.session_state[selected_state_key] = default_index
+    mo_index = max(0, min(n_mos - 1, int(st.session_state[selected_state_key])))
 
     st.subheader(f"{analysis['formula']} · {analysis['smiles']}")
+    st.markdown("**MO 에너지 준위 — 점을 클릭해서 표시할 오비탈을 선택하세요**")
+    energy_fig = build_mo_energy_diagram(energies, num_electrons, mo_index)
+    energy_event = st.plotly_chart(
+        energy_fig,
+        use_container_width=True,
+        key=f"quantumlens_energy_levels_{smiles_key}",
+        on_select="rerun",
+        selection_mode="points",
+        config={"displaylogo": False, "scrollZoom": True},
+    )
+    try:
+        selected_points = energy_event.selection.points
+    except Exception:
+        try:
+            selected_points = energy_event.get("selection", {}).get("points", [])
+        except Exception:
+            selected_points = []
+    if selected_points:
+        selected_point = selected_points[-1]
+        customdata = selected_point.get("customdata")
+        try:
+            chosen_index = int(customdata[0]) if customdata is not None else int(selected_point["point_index"])
+        except (TypeError, ValueError, KeyError, IndexError):
+            chosen_index = mo_index
+        if 0 <= chosen_index < n_mos and chosen_index != mo_index:
+            st.session_state[selected_state_key] = chosen_index
+            st.rerun()
+    mo_index = int(st.session_state[selected_state_key])
+    st.caption("파란 선/점: 점유된 MO · 회색: 비점유 MO · 주황색: 현재 선택 · ↑↓: 전자 점유")
     metric_cols = st.columns(4)
     metric_cols[0].metric("MO 에너지", f"{energies[mo_index]:.3f} eV")
     metric_cols[1].metric("오비탈", f"MO {mo_index + 1} / {n_mos}")
@@ -659,6 +808,43 @@ def main() -> None:
         f"격자 {resolution}³ ({resolution ** 3:,} voxel) · 최대 |Ψ| ≈ {max_amplitude:.4g} "
         f"· RDKit {analysis['rdkit_version']}"
     )
+
+    with st.expander("선택한 MO의 AO 기여도", expanded=True):
+        coeff_vector = coefficients[:, mo_index]
+        overlap = np.asarray(analysis["overlap"], dtype=float)
+        ao_populations = mulliken_ao_contributions(coeff_vector, overlap)
+        atom_populations: dict[int, float] = {}
+        for ao_i, atom_i in enumerate(analysis["ao_atom_indices"]):
+            atom_populations[int(atom_i)] = atom_populations.get(int(atom_i), 0.0) + float(ao_populations[ao_i])
+
+        left, right = st.columns([1.25, 1])
+        with left:
+            st.markdown("**원자 오비탈별 기여도**")
+            ao_order = np.argsort(np.abs(ao_populations))[::-1][: min(20, len(ao_populations))]
+            ao_rows = []
+            for ao_i in ao_order:
+                ao_rows.append({
+                    "원자 오비탈": analysis["ao_labels"][int(ao_i)],
+                    "MO 계수 cᵢ": float(coeff_vector[ao_i]),
+                    "Mulliken 기여도 (%)": float(100.0 * ao_populations[ao_i]),
+                })
+            st.dataframe(ao_rows, use_container_width=True, hide_index=True)
+        with right:
+            st.markdown("**원자별 총 기여도**")
+            atom_rows = []
+            for atom_i, population in sorted(atom_populations.items(), key=lambda item: abs(item[1]), reverse=True):
+                atom_rows.append({
+                    "원자": f"{atom_i + 1}번 {symbols[atom_i]}",
+                    "Mulliken 기여도 (%)": float(100.0 * population),
+                })
+            st.dataframe(atom_rows, use_container_width=True, hide_index=True)
+            st.metric("AO 기여도 합계", f"{100.0 * float(ao_populations.sum()):.2f}%")
+        st.caption(
+            "기여도는 비직교 AO 기저의 중첩 행렬 S를 반영한 Mulliken 값(qᵢ = cᵢ(SC)ᵢ)입니다. "
+            "전체 AO의 합은 100%가 되지만, 겹침 효과 때문에 개별 값은 음수일 수도 있어 확률과 같지 않습니다. "
+            "여기서 2s·2px·2py·2pz는 EHT 기저 AO의 표시이며 sp³ 같은 혼성 오비탈로 직접 계산한 값은 아닙니다. "
+            "또한 RDKit EHT 반환값에 AO 라벨 메타데이터가 없어서 원자별 s/px/py/pz 순서를 가정하므로, AO 이름은 정성적 참고로 봐야 합니다."
+        )
 
     with st.expander("계산 정보 및 AO 기저 함수", expanded=False):
         left, right = st.columns(2)
