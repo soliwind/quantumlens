@@ -1,0 +1,24 @@
+[client]
+toolbarMode = "minimal"
+showSidebarNavigation = false
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#1b2027"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f4f5f7"
+textColor = "#1b2027"
+linkColor = "#2f5fa7"
+font = "'Pretendard Variable', Pretendard, -apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif"
+headingFont = "'Pretendard Variable', Pretendard, -apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif"
+headingFontWeights = [650, 600, 600]
+baseFontSize = 15
+baseRadius = "small"
+borderColor = "#e6e8eb"
+showWidgetBorder = true
+
+[theme.sidebar]
+backgroundColor = "#f7f8f9"
