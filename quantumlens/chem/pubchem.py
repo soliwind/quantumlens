@@ -32,8 +32,11 @@ def fetch(name: str) -> Molecule:
         title = record.get("Title", name)
         smiles = record.get("IsomericSMILES") or record.get("SMILES") or ""
     except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            raise MoleculeError(f"PubChem에서 '{name}'을(를) 찾지 못했습니다. 영문 이름으로 검색해 보세요.") from exc
+        if exc.code in (400, 404):  # PubChem answers 400 for strings it cannot parse as a name
+            raise MoleculeError(
+                f"'{name}'을(를) SMILES로 해석하지 못했고, PubChem에서도 찾지 못했습니다. "
+                "SMILES라면 괄호와 고리 번호를, 이름이라면 영문 철자를 확인해 주세요."
+            ) from exc
         raise MoleculeError("PubChem 검색 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise MoleculeError("PubChem에 연결하지 못했습니다. 인터넷 연결을 확인하거나 SMILES로 입력해 주세요.") from exc
@@ -48,7 +51,7 @@ def fetch(name: str) -> Molecule:
         return mol
     except MoleculeError:
         raise
-    except Exception:
+    except Exception as exc:
         if not smiles:
-            raise MoleculeError("PubChem에 3D 구조가 없습니다.")
+            raise MoleculeError("PubChem에 3D 구조가 없습니다.") from exc
         return from_smiles(smiles, name=title, source="PubChem SMILES")

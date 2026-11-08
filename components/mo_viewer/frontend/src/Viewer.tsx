@@ -365,7 +365,9 @@ export default function Viewer({ args }: { args: ViewerArgs }) {
   // --- lobes -----------------------------------------------------------------
   useEffect(() => {
     buildLobes(ctxRef.current!, args.positive, args.negative);
-  }, [args.positive, args.negative]);
+    // Streamlit sends fresh objects on every rerun; compare the data, not identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [args.positive?.vertices, args.positive?.faces, args.negative?.vertices, args.negative?.faces]);
 
   // --- molecule (re)build and camera home -------------------------------------
   useEffect(() => {

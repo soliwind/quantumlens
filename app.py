@@ -19,7 +19,7 @@ from rdkit import Chem
 
 from quantumlens.analysis.describe import describe
 from quantumlens.chem import library, pubchem
-from quantumlens.chem.molecule import Molecule, MoleculeError, from_molblock, from_smiles, from_xyz
+from quantumlens.chem.molecule import MAX_ATOMS, Molecule, MoleculeError, from_molblock, from_smiles, from_xyz
 from quantumlens.content.glossary import tip
 from quantumlens.eht.params import ELEMENTS
 from quantumlens.field.grid import compute_grid
@@ -202,11 +202,12 @@ def sidebar() -> dict:
                 if st.session_state.get("last_upload") != upload.file_id:
                     st.session_state.last_upload = upload.file_id
                     set_spec(file_spec)
-            st.caption("사용할 수 있는 원소: " + " ".join(ELEMENTS) + f" · 수소 포함 {48}개 원자까지")
+            st.caption("사용할 수 있는 원소: " + " ".join(ELEMENTS) + f" · 수소 포함 {MAX_ATOMS}개 원자까지")
 
         st.html('<div class="ql-side-h">표시</div>')
+        st.session_state.setdefault("iso", DEFAULT_ISO)
         iso = st.slider(
-            "등치값", 0.005, 0.12, value=st.session_state.get("iso", DEFAULT_ISO), step=0.005, format="%.3f",
+            "등치값", 0.005, 0.12, step=0.005, format="%.3f",
             help=tip("isovalue"), key="iso",
         )
         opacity = st.slider("불투명도", 0.3, 1.0, 0.85, 0.05, key="opacity")
@@ -351,7 +352,9 @@ def orbital_area(spec_json: str, charge: int, label: str, opts: dict) -> None:
         facts.append(f"{len(group)}중 축퇴")
     spec = json.loads(spec_json)
     params = share_params(spec, k, charge, load_molecule(spec_json).charge, opts["iso"])
-    if spec["kind"] != "file":
+    if spec["kind"] == "file":
+        st.query_params.clear()  # otherwise a reload would reopen the previous molecule
+    else:
         st.query_params.from_dict(params)
 
     with left:

@@ -54,7 +54,7 @@ def compute_grid(res: EHTResult, k: int, quality: str = "normal") -> Grid:
         shape = np.ceil((hi - lo) / spacing).astype(int) + 1
     axes = [lo[d] + spacing * np.arange(shape[d]) for d in range(3)]
     X, Y, Z = np.meshgrid(*axes, indexing="ij", sparse=False)
-    values = _psi_on_points(res, k, (X, Y, Z))
+    values = _psi_on_points(res, k, (X, Y, Z)).astype(np.float32)
     return Grid(origin=lo, spacing=float(spacing), shape=tuple(int(s) for s in shape), values=values)
 
 
