@@ -12,7 +12,8 @@ _CSS = """
   :root { --ql-ink:#1b2027; --ql-ink2:#4b5360; --ql-muted:#8a919c; --ql-hair:#e6e8eb; --ql-band:#f4f5f7; }
   html, body, [class*="st-"] { font-feature-settings: "tnum" 1; }
   header[data-testid="stHeader"] { background: transparent; height: 0; }
-  [data-testid="stToolbar"], [data-testid="stDecoration"], footer { display: none !important; }
+  /* hide the app menu but keep the toolbar: it holds the button that re-opens a collapsed sidebar */
+  [data-testid="stMainMenu"], [data-testid="stAppDeployButton"], [data-testid="stDecoration"], footer { display: none !important; }
   .block-container { padding-top: 1.6rem; padding-bottom: 3rem; max-width: 1480px; }
   section[data-testid="stSidebar"] .block-container { padding-top: 1.2rem; }
 
