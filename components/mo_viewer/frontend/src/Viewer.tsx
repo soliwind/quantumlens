@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { TrackballControls } from "three/examples/jsm/controls/TrackballControls.js";
 import { CSS2DObject, CSS2DRenderer } from "three/examples/jsm/renderers/CSS2DRenderer.js";
 import { Streamlit } from "./streamlit";
 import type { Atom, BondSpec, MeshPayload, ViewerArgs } from "./types";
@@ -11,7 +11,7 @@ type Ctx = {
   labelRenderer: CSS2DRenderer;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
-  controls: OrbitControls;
+  controls: TrackballControls;
   molecule: THREE.Group;
   lobes: THREE.Group;
   labels: THREE.Group;
@@ -171,13 +171,14 @@ function buildLobes(ctx: Ctx, positive: MeshPayload | null, negative: MeshPayloa
   add(negative, ctx.materials.negative, 2);
 }
 
-function homeView(atoms: Atom[], aspect: number) {
-  const center = new THREE.Vector3();
-  atoms.forEach((a) => center.add(new THREE.Vector3(a.x, a.y, a.z)));
-  center.multiplyScalar(1 / Math.max(atoms.length, 1));
-  let radius = 0;
-  atoms.forEach((a) => (radius = Math.max(radius, new THREE.Vector3(a.x, a.y, a.z).distanceTo(center))));
-  radius += 1.7; // room for orbital lobes
+function homeView(ctx: Ctx, atoms: Atom[], aspect: number) {
+  // Pivot and framing follow what is actually drawn: atoms plus the current lobes.
+  const box = new THREE.Box3().setFromObject(ctx.molecule);
+  if (ctx.lobes.children.length) box.union(new THREE.Box3().setFromObject(ctx.lobes));
+  if (box.isEmpty()) box.setFromCenterAndSize(new THREE.Vector3(), new THREE.Vector3(4, 4, 4));
+  const sphere = box.getBoundingSphere(new THREE.Sphere());
+  const center = sphere.center;
+  const radius = Math.max(sphere.radius, 1.5) * 1.02;
 
   const linear = atoms.length > 1 && atoms.every((a) => Math.abs(a.x) < 1e-3 && Math.abs(a.y) < 1e-3);
   const planar = !linear && atoms.every((a) => Math.abs(a.z) < 1e-2);
@@ -194,8 +195,11 @@ function homeView(atoms: Atom[], aspect: number) {
     up = new THREE.Vector3(0, 0, 1);
   }
   const fov = (28 * Math.PI) / 180;
-  const fit = (0.92 * radius) / Math.tan(fov / 2) / Math.min(1, aspect) ** 0.8;
-  return { position: center.clone().add(dir.normalize().multiplyScalar(fit)), target: center, up };
+  const fit = radius / Math.tan(fov / 2) / Math.min(1, aspect) ** 0.8;
+  // make `up` exactly perpendicular to the viewing direction
+  dir.normalize();
+  up.sub(dir.clone().multiplyScalar(up.dot(dir))).normalize();
+  return { position: center.clone().add(dir.multiplyScalar(fit)), target: center.clone(), up };
 }
 
 function makeGizmo() {
@@ -229,6 +233,8 @@ export default function Viewer({ args }: { args: ViewerArgs }) {
   const host = useRef<HTMLDivElement>(null);
   const stage = useRef<HTMLDivElement>(null);
   const ctxRef = useRef<Ctx | null>(null);
+  const argsRef = useRef(args);
+  argsRef.current = args; // handlers registered once must still see the latest atoms
   const showAxesRef = useRef(args.showAxes);
   const [labels, setLabels] = useState(args.showLabels);
   const [fullscreen, setFullscreen] = useState(false);
@@ -259,13 +265,16 @@ export default function Viewer({ args }: { args: ViewerArgs }) {
     rim.position.set(4, -2, -5);
     camera.add(rim);
 
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.12;
-    controls.rotateSpeed = 0.85;
-    controls.zoomSpeed = 0.9;
+    // Trackball: free rotation that follows the drag direction on screen,
+    // no pole lock, and no inertia after the mouse is released.
+    const controls = new TrackballControls(camera, renderer.domElement);
+    controls.rotateSpeed = 3.0;
+    controls.zoomSpeed = 1.0;
+    controls.panSpeed = 0.6;
+    controls.staticMoving = true;
     controls.minDistance = 2;
     controls.maxDistance = 120;
+    controls.keys = ["", "", ""]; // disable the A/S/D modifier keys
 
     const lobeMaterial = () =>
       new THREE.MeshPhysicalMaterial({
@@ -308,6 +317,7 @@ export default function Viewer({ args }: { args: ViewerArgs }) {
       labelRenderer.setSize(w, h);
       camera.aspect = w / Math.max(h, 1);
       camera.updateProjectionMatrix();
+      controls.handleResize();
     };
     const observer = new ResizeObserver(resize);
     observer.observe(el);
@@ -351,20 +361,19 @@ export default function Viewer({ args }: { args: ViewerArgs }) {
     };
   }, []);
 
-  // --- molecule (re)build and camera home -------------------------------------
-  useEffect(() => {
-    const ctx = ctxRef.current!;
-    buildMolecule(ctx, args.atoms, args.bonds);
-    const el = stage.current!;
-    ctx.home = homeView(args.atoms, el.clientWidth / Math.max(el.clientHeight, 1));
-    resetView();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [args.moleculeKey]);
-
+  // Effects run in declaration order: lobes first, so the initial framing includes them.
   // --- lobes -----------------------------------------------------------------
   useEffect(() => {
     buildLobes(ctxRef.current!, args.positive, args.negative);
   }, [args.positive, args.negative]);
+
+  // --- molecule (re)build and camera home -------------------------------------
+  useEffect(() => {
+    const ctx = ctxRef.current!;
+    buildMolecule(ctx, args.atoms, args.bonds);
+    resetView();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [args.moleculeKey]);
 
   useEffect(() => {
     const { positive, negative } = ctxRef.current!.materials;
@@ -407,6 +416,8 @@ export default function Viewer({ args }: { args: ViewerArgs }) {
 
   function resetView() {
     const ctx = ctxRef.current!;
+    const el = stage.current!;
+    ctx.home = homeView(ctx, argsRef.current.atoms, el.clientWidth / Math.max(el.clientHeight, 1));
     ctx.camera.up.copy(ctx.home.up);
     ctx.camera.position.copy(ctx.home.position);
     ctx.controls.target.copy(ctx.home.target);
